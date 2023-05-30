@@ -1,0 +1,219 @@
+import java.text.SimpleDateFormat
+
+plugins {
+    id 'com.github.ben-manes.versions' version '0.39.0'
+    id 'net.minecraftforge.gradleutils' version '2.+'
+    id 'me.champeau.jmh' version '0.6.5'
+}
+
+apply plugin: 'maven-publish'
+
+ext.asmVersion = 9.1
+
+allprojects {
+    apply plugin: 'java-library'
+    apply plugin: 'eclipse'
+
+    group = 'cpw.mods'
+    java {
+        toolchain.languageVersion = JavaLanguageVersion.of(16)
+        withSourcesJar()
+    }
+    //compileJava {
+    //    sourceCompatibility = JavaVersion.VERSION_16
+    //    targetCompatibility = JavaVersion.VERSION_16
+    //}
+
+
+    test {
+        useJUnitPlatform()
+    }
+
+    configurations {
+        tWorkaround
+        testCompileOnly {
+            // for some reason, test-only project dependencies aren't registered properly due to an issue with the jmh plugin
+            // so we have our own extra configuration
+            // see https://github.com/melix/jmh-gradle-plugin/issues/216 for details
+            extendsFrom tWorkaround
+        }
+    }
+
+    eclipse {
+        project {
+            if (!project.name.startsWith("${rootProject.name}")) {
+                name = "${rootProject.name}-${project.name}"
+            }
+        }
+        classpath {
+            plusConfigurations << configurations.tWorkaround // fix handling of test-only dep
+            file.whenMerged { classpath ->
+                classpath.entries.each { entry ->
+                    if (entry instanceof org.gradle.plugins.ide.eclipse.model.Library
+                        || entry instanceof org.gradle.plugins.ide.eclipse.model.ProjectDependency) {
+                        entry.entryAttributes['module'] = true
+                    } else if (entry instanceof org.gradle.plugins.ide.eclipse.model.SourceFolder) {
+                        def extraReads = ['org.junit.jupiter.api', 'powermock.core', 'powermock.reflect', 'cpw.mods.modlauncher.testjars']
+                            .collect { "cpw.mods.modlauncher=$it" }
+                            .join(':')
+                        entry.entryAttributes['add-reads'] = extraReads
+                    }
+                }
+            }
+        }
+    }
+}
+
+repositories {
+    mavenLocal()
+    maven {
+        name = 'forge'
+        url = 'https://maven.minecraftforge.net/'
+    }
+}
+
+def isNonStable = { String version ->
+    def stableKeyword = ['RELEASE', 'FINAL', 'GA'].any { it -> version.toUpperCase().contains(it) }
+    def regex = /^[0-9,.v-]+(-r)?$/
+    return !stableKeyword && !(version ==~ regex)
+}
+
+dependencyUpdates {
+    rejectVersionIf {
+        isNonStable(it.candidate.version)
+    }
+}
+
+test {
+    // exclude all tests for now
+    exclude '**/*'
+}
+
+compileTestJava {
+    // exclude all tests - not compatible with modular system
+    exclude '/**/*'
+
+    options.compilerArgs << '--add-modules' << 'ALL-MODULE-PATH' // for tests, we don't have a separate module descriptor, so just read everything
+}
+
+group = 'cpw.mods'
+ext.asmVersion = 9.2
+
+version = "9.1"
+logger.lifecycle('Version: ' + version)
+
+dependencies {
+    implementation('net.sf.jopt-simple:jopt-simple:5.0.4')
+    compileOnly('org.jetbrains:annotations:21.0.1')
+    api("org.ow2.asm:asm:${asmVersion}")
+    api("org.ow2.asm:asm-tree:${asmVersion}")
+    api("org.ow2.asm:asm-commons:${asmVersion}")
+    implementation('org.apache.logging.log4j:log4j-api:2.17.1')
+    implementation('org.apache.logging.log4j:log4j-core:2.17.1')
+    implementation('cpw.mods:securejarhandler:1.0.+')
+    annotationProcessor('org.apache.logging.log4j:log4j-core:2.17.1')
+    testImplementation('org.junit.jupiter:junit-jupiter-api:5.7.+')
+    testImplementation('org.powermock:powermock-core:2.0.+')
+    testImplementation('org.junit.jupiter:junit-jupiter-engine:5.7.+')
+    tWorkaround(project(':testjars'))
+    testCompileOnly('org.jetbrains:annotations:21.0.1')
+    testRuntimeOnly('cpw.mods:bootstraplauncher:0.1.+')
+    jmhImplementation('org.powermock:powermock-core:2.0.+')
+    jmhImplementation("org.ow2.asm:asm:${asmVersion}")
+    jmhImplementation("org.ow2.asm:asm-tree:${asmVersion}")
+    jmhImplementation("org.ow2.asm:asm-commons:${asmVersion}")
+    jmh("org.ow2.asm:asm:${asmVersion}")
+    jmh('org.openjdk.jmh:jmh-core:1.32')
+    jmh('org.openjdk.jmh:jmh-generator-bytecode:1.31')
+}
+
+jmh {
+    includes = [ 'cpw.mods.modlauncher.benchmarks.TransformBenchmark' ]
+    benchmarkMode = ['avgt' ]
+    profilers = [ 'stack' ]
+    timeOnIteration = '3s'
+    warmup = '3s'
+    warmupIterations = 3
+    iterations = 3
+    fork = 3
+    timeUnit = 'us'
+}
+
+tasks['jmh'].dependsOn(clean)
+
+ext.sharedManifest = manifest {
+    attributes(['Specification-Title': 'modlauncher',
+                'Specification-Vendor': 'forge',
+                'Specification-Version': '9.0', // We are version 9 of the modlauncher specification
+                'Implementation-Title': project.name,
+                'Implementation-Version': "9.1",
+                'Implementation-Vendor' :'forge',
+                'Implementation-Timestamp': java.time.Instant.now().toString(),
+                'Git-Commit': gradleutils.gitInfo.abbreviatedId,
+                'Git-Branch': gradleutils.gitInfo.branch,
+                'Build-Number': "${System.getenv('BUILD_NUMBER')?:0}" ],
+            'cpw/mods/modlauncher/api/')
+    attributes(['Specification-Title': 'modlauncherserviceapi',
+                'Specification-Vendor': 'forge',
+                'Specification-Version': '9.0', // We are version 9 of the modlauncher cpw.mods.modlauncher.serviceapi specification
+                "Implementation-Title": project.name,
+                'Implementation-Version': "9.1",
+                'Implementation-Vendor' :'forge',
+                'Implementation-Timestamp': java.time.Instant.now().toString(),
+                'Git-Commit': gradleutils.gitInfo.abbreviatedId,
+                'Git-Branch': gradleutils.gitInfo.branch,
+                'Build-Number': "${System.getenv('BUILD_NUMBER')?:0}"],
+            'cpw/mods/modlauncher/serviceapi/')
+}
+
+jar {
+    manifest = project.java.manifest {
+        from sharedManifest
+    }
+}
+
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:unchecked'
+}
+
+compileJava {
+    options.javaModuleVersion = "9.1"
+    options.javaModuleMainClass = 'cpw.mods.modlauncher.Launcher'
+
+    doFirst {
+        options.compilerArgs << '--module-path' << classpath.asPath
+    }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            pom {
+                name = 'Mod Launcher'
+                description = 'Common ModLauncher framework'
+                url = 'https://github.com/McModLauncher/modlauncher'
+                scm {
+                    url = 'https://github.com/McModLauncher/modlauncher'
+                    connection = 'scm:git:git://github.com/McModLauncher/modlauncher.git'
+                    developerConnection = 'scm:git:git@github.com:McModLauncher/modlauncher.git'
+                }
+                issueManagement {
+                    system = 'github'
+                    url = 'https://github.com/McModLauncher/modlauncher/issues'
+                }
+
+                developers {
+                    developer {
+                        id = 'cpw'
+                        name = 'cpw'
+                    }
+                }
+            }
+        }
+    }
+    repositories {
+        maven gradleutils.getPublishingForgeMaven()
+    }
+}
